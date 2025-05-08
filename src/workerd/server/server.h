@@ -102,6 +102,16 @@ class Server final: private kj::TaskSet::ErrorHandler {
     kj::String uniqueKey;
     bool isEvictable;
     bool enableSql;
+    // Container configuration
+    kj::Maybe<kj::String> containerImage;
+    kj::Maybe<kj::String> kubernetesNamespace;
+    kj::Maybe<kj::String> kubernetesApiServer;
+    kj::Maybe<kj::String> kubernetesServiceAccount;
+    // Add container resource fields
+    uint32_t memoryLimitMb = 32768;
+    uint32_t cpuLimitMillicores = 8000;
+    bool runAsNonRoot = true;
+    kj::String serviceAccountToken = kj::String();
   };
   struct Ephemeral {
     bool isEvictable;

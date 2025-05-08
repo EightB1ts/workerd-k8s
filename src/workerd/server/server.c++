@@ -6,6 +6,7 @@
 
 #include "bundle-fs.h"
 #include "workerd-api.h"
+#include "container.h"
 
 #include <workerd/api/actor-state.h>
 #include <workerd/api/analytics-engine.capnp.h>
@@ -2276,6 +2277,39 @@ class Server::WorkerService final: public Service,
 
         auto loopback = kj::refcounted<Loopback>(*this);
 
+        // Create container service if configured
+        kj::Maybe<rpc::Container::Client> containerClient;
+
+        KJ_SWITCH_ONEOF(parent.config) {
+          KJ_CASE_ONEOF(c, Durable) {
+            KJ_IF_SOME(img, c.containerImage) {
+                // Create a KubernetesContainerService for this actor
+                // Get config values with defaults if not provided
+                auto getOrDefault = [](const kj::Maybe<kj::String>& maybeValue, kj::StringPtr defaultValue) {
+                  return maybeValue.map([](const kj::String& s) { return kj::heapString(s); })
+                      .orDefault(kj::heapString(defaultValue));
+                };
+
+                auto containerService = kj::heap<KubernetesContainerService>(
+                    key,
+                    getOrDefault(c.kubernetesNamespace, "default"),
+                    getOrDefault(c.kubernetesApiServer, "kubernetes.default.svc"),
+                    getOrDefault(c.kubernetesServiceAccount, "default"),
+                    img,
+                    c.memoryLimitMb,
+                    c.cpuLimitMillicores,
+                    c.runAsNonRoot,
+                    c.serviceAccountToken);
+
+                // Create client to the container service
+                containerClient = rpc::Container::Client(kj::mv(containerService));
+              }
+          }
+          KJ_CASE_ONEOF(c, Ephemeral) {
+            // Containers not supported for ephemeral actors
+          }
+        }
+
         service.worker->runInLockScope(asyncLock, [&](Worker::Lock& lock) {
           // We define this event ID in the internal codebase, but to have WebSocket Hibernation
           // work for local development we need to pass an event type.
@@ -2284,7 +2318,8 @@ class Server::WorkerService final: public Service,
           auto& actorRef = *actor.emplace(kj::refcounted<Worker::Actor>(*service.worker,
               getTracker(), Worker::Actor::cloneId(id), true, kj::mv(makeActorCache),
               parent.className, kj::mv(makeStorage), lock, kj::mv(loopback), timerChannel,
-              kj::refcounted<ActorObserver>(), tryGetManagerRef(), hibernationEventTypeId));
+              kj::refcounted<ActorObserver>(), tryGetManagerRef(), hibernationEventTypeId,
+              kj::mv(containerClient)));
           onBrokenTask = monitorOnBroken(actorRef);
         });
       }

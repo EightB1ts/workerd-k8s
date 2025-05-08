@@ -99,10 +99,12 @@ wd_cc_library(
     srcs = [
         "server.c++",
         "workerd-api.c++",
+        "container.c++",
     ],
     hdrs = [
         "server.h",
         "workerd-api.h",
+        "container.h",
     ],
     visibility = ["//visibility:public"],
     deps = [

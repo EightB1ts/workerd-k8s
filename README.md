@@ -1,4 +1,171 @@
-# 👷 `workerd`, Cloudflare's JavaScript/Wasm Runtime
+# 👷 `workerd`, Cloudflare's JavaScript/Wasm Runtime - Now with K8s!
+
+> [!WARNING]
+> Please, I beg of you, don't use this in any production system!
+> This is a POC to run in a local development environment without cloudchamber
+
+## Example Usage
+
+### Durable Object Implementation (TypeScript/JavaScript)
+
+```ts
+import { DurableObject, DurableObjectState, WebSocket, DurableObjectId } from '@cloudflare/workers-types';
+
+export class Container {
+    container: globalThis.Container;
+    ctx: DurableObjectState;
+    env: any;
+
+    async blockConcurrencyRetry(cb: () => Promise<unknown>) {
+        await this.ctx.blockConcurrencyWhile(async () => {
+            let lastErr;
+            for (let i = 0; i < 10; i++) {
+                try {
+                    return await cb();
+                } catch (err) {
+                    lastErr = err;
+                    continue;
+                }
+            }
+            throw lastErr;
+        });
+    }
+
+    constructor(ctx: DurableObjectState, env: Env) {
+        this.ctx = ctx;
+        this.env = env;
+        this.container = ctx.container!;
+        if (!ctx.container) {
+            throw new Error("This Durable Object is not attached to a container. Check your config.");
+        }
+        this.blockConcurrencyRetry(async () => {
+            await this.initWebsocket();
+        });
+    }
+
+    conn?: WebSocket;
+    async initWebsocket() {
+        if (!this.container || !this.container.running) this.container.start({
+            entrypoint: ["node", "/app/hello.js"], // Example: run hello.js in /app
+            enableInternet: false,
+            env: { MY_ENV_VAR: "hello-world" },
+        });
+
+        const res = await this.container.getTcpPort(8080).fetch(new Request('http://container/ws', { headers: { Upgrade: 'websocket' } }));
+        if (res.webSocket === null) throw new Error('websocket server is faulty');
+
+        // Accept the websocket and listen to messages
+        res.webSocket.accept();
+        res.webSocket.addEventListener('message', (msg: any) => {
+            if (this.resolveResolve !== undefined)
+                this.resolveResolve(typeof msg.data === 'string' ? msg.data : new TextDecoder().decode(msg.data));
+        });
+
+        res.webSocket.addEventListener('close', () => {
+            this.ctx.abort();
+        });
+
+        this.conn = res.webSocket;
+    }
+
+    promise?: Promise<string>;
+    resolveResolve?: (s: string) => void;
+    async send(message: string) {
+        this.promise = new Promise((res) => {
+            this.resolveResolve = res;
+        });
+        this.conn?.send(message);
+    }
+
+    async receive(): Promise<string> {
+        if (this.promise !== undefined) return await this.promise;
+        return '<no message>';
+    }
+
+    async fetch(req: Request) {
+        const url = req.url.replace('https:', 'http:');
+        return this.container.getTcpPort(8080).fetch(url, req);
+    }
+}
+
+export default {
+    async fetch(request: Request, env: any): Promise<Response> {
+        const id: DurableObjectId = env.CONTAINER.idFromName('foo');
+        const stub = env.CONTAINER.get(id);
+
+        if (request.method !== 'POST') {
+            await stub.fetch(request);
+            return new Response("Go");
+        }
+
+        await stub.send('we sent: ' + (await request.text()));
+        const message = await stub.receive();
+        return new Response(message);
+    },
+} satisfies ExportedHandler<Env>;
+```
+
+### Example Cap'n Proto Config
+
+```capnp
+@0xabcdefabcdefabcd;
+
+using Workerd = import "workerd.capnp";
+
+const config :Workerd.Config = (
+  services = [
+    (
+      name = "internet",
+      network = (
+        allow = ["public", "private", "local"]
+      )
+    ),
+    (
+      name = "my-worker",
+      worker = (
+        modules = [
+          (name = "dist/run.js", esModule = embed "dist/run.js")
+        ],
+        compatibilityDate = "2024-06-01",
+        durableObjectNamespaces = [
+          (
+            className = "Container",
+            uniqueKey = "CONTAINER",
+            preventEviction = true,
+            containerConfig = (
+              enabled = true,
+              kubernetes = (
+                apiServer = "localhost:6443",
+                namespace = "default",
+                serviceAccount = "default",
+                image = "myimage:latest",
+                memoryLimitMb = 1024,
+                cpuLimitMillicores = 1000,
+                runAsNonRoot = true,
+                serviceAccountToken = ""
+              )
+            )
+          )
+        ],
+        durableObjectStorage = (inMemory = void),
+        bindings = [
+          (
+            name = "CONTAINER",
+            durableObjectNamespace = "Container"
+          )
+        ]
+      )
+    )
+  ],
+  sockets = [
+    (
+      name = "http",
+      address = "*:8081",
+      service = "my-worker"
+    )
+  ]
+);
+```
 
 ![Banner](/docs/assets/banner.png)
 

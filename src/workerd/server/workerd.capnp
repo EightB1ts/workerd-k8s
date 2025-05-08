@@ -537,11 +537,57 @@ struct Worker {
   # Where should the global "fetch" go to? The default is the service called "internet", which
   # should usually be configured to talk to the public internet.
 
-  cacheApiOutbound @11 :ServiceDesignator;
-  # Where should cache API (i.e. caches.default and caches.open(...)) requests go?
-
   durableObjectNamespaces @7 :List(DurableObjectNamespace);
   # List of durable object namespaces in this Worker.
+
+  durableObjectUniqueKeyModifier @8 :Text;
+  # Additional text which is hashed together with `DurableObjectNamespace.uniqueKey`. When using
+  # worker inheritance, each derived worker must specify a unique modifier to ensure that its
+  # Durable Object instances have unique IDs from all other workers inheriting the same parent.
+  #
+  # DO NOT LOSE this value, otherwise it may be difficult or impossible to recover stored data.
+
+  durableObjectStorage :union {
+    # Specifies where this worker's Durable Objects are stored.
+
+    none @9 :Void;
+    # Default. The worker has no Durable Objects. `durableObjectNamespaces` must be empty, or
+    # define all namespaces as `ephemeralLocal`, or this must be an abstract worker (meant to be
+    # inherited by other workers, who will specify `durableObjectStorage`).
+
+    inMemory @10 :Void;
+    # The `state.storage` API stores in-memory only. All stored data will persist for the
+    # lifetime of the process, but will be lost upon process exit.
+    #
+    # Individual objects will still shut down when idle as normal -- only data stored with the
+    # `state.storage` interface is persistent for the lifetime of the process.
+    #
+    # This mode is intended for local testing purposes.
+
+    localDisk @11 :Text;
+    # ** EXPERIMENTAL; SUBJECT TO BACKWARDS-INCOMPATIBLE CHANGE **
+    #
+    # Durable Object data will be stored in a directory on local disk. This field is the name of
+    # a service, which must be a DiskDirectory service. For each Durable Object class, a
+    # subdirectory will be created using `uniqueKey` as the name. Within the directory, one or
+    # more files are created for each object, with names `<id>.<ext>`, where `.<ext>` may be any of
+    # a number of different extensions depending on the storage mode. (Currently, the main storage
+    # is a file with the extension `.sqlite`, and in certain situations extra files with the
+    # extensions `.sqlite-wal`, and `.sqlite-shm` may also be present.)
+  }
+
+  cacheApiOutbound @12 :ServiceDesignator;
+  # Where should cache API (i.e. caches.default and caches.open(...)) requests go?
+
+  moduleFallback @13 :Text;
+
+  tails @14 :List(ServiceDesignator);
+  # List of tail worker services that should receive tail events for this worker.
+  # See: https://developers.cloudflare.com/workers/observability/logs/tail-workers/
+
+  streamingTails @15 :List(ServiceDesignator);
+  # List of streaming tail worker services that should receive tail events for this worker.
+  # NOTE: This will be deleted in a future refactor, do not depend on this.
 
   struct DurableObjectNamespace {
     className @0 :Text;
@@ -595,56 +641,41 @@ struct Worker {
     # workerd uses SQLite to back all Durable Objects, but the SQL API is hidden by default to
     # emulate behavior of traditional DO namespaces on Cloudflare that aren't SQLite-backed. This
     # flag should be enabled when testing code that will run on a SQLite-backed namespace.
+
+    containerConfig @5 :ContainerConfig;
+    # Configuration for attaching a container to Durable Objects in this namespace.
+    # If not specified, container functionality will not be available (ctx.container will be undefined).
   }
 
-  durableObjectUniqueKeyModifier @8 :Text;
-  # Additional text which is hashed together with `DurableObjectNamespace.uniqueKey`. When using
-  # worker inheritance, each derived worker must specify a unique modifier to ensure that its
-  # Durable Object instances have unique IDs from all other workers inheriting the same parent.
-  #
-  # DO NOT LOSE this value, otherwise it may be difficult or impossible to recover stored data.
+  struct ContainerConfig {
+    # Configuration for containers attached to Durable Objects.
 
-  durableObjectStorage :union {
-    # Specifies where this worker's Durable Objects are stored.
+    # Kubernetes-specific container configuration.
+    apiServer @0 :Text = "kubernetes.default.svc";
+    # Kubernetes API server address
 
-    none @9 :Void;
-    # Default. The worker has no Durable Objects. `durableObjectNamespaces` must be empty, or
-    # define all namespaces as `ephemeralLocal`, or this must be an abstract worker (meant to be
-    # inherited by other workers, who will specify `durableObjectStorage`).
+    namespace @1 :Text = "default";
+    # Kubernetes namespace to use for creating pods
 
-    inMemory @10 :Void;
-    # The `state.storage` API stores in-memory only. All stored data will persist for the
-    # lifetime of the process, but will be lost upon process exit.
-    #
-    # Individual objects will still shut down when idle as normal -- only data stored with the
-    # `state.storage` interface is persistent for the lifetime of the process.
-    #
-    # This mode is intended for local testing purposes.
+    serviceAccount @2 :Text;
+    # Service account to use for authentication
 
-    localDisk @12 :Text;
-    # ** EXPERIMENTAL; SUBJECT TO BACKWARDS-INCOMPATIBLE CHANGE **
-    #
-    # Durable Object data will be stored in a directory on local disk. This field is the name of
-    # a service, which must be a DiskDirectory service. For each Durable Object class, a
-    # subdirectory will be created using `uniqueKey` as the name. Within the directory, one or
-    # more files are created for each object, with names `<id>.<ext>`, where `.<ext>` may be any of
-    # a number of different extensions depending on the storage mode. (Currently, the main storage
-    # is a file with the extension `.sqlite`, and in certain situations extra files with the
-    # extensions `.sqlite-wal`, and `.sqlite-shm` may also be present.)
+    image @3 :Text;
+    # Container image to use for pods
+
+    memoryLimitMb @4 :UInt32 = 32768;
+    # Memory limit for container in megabytes
+
+    cpuLimitMillicores @5 :UInt32 = 8000;
+    # CPU limit for container in millicores
+
+    runAsNonRoot @6 :Bool = true;
+    # Whether the container should run as non-root user
+
+    serviceAccountToken @7 :Text;
+    # Service account token to use for authentication (optional, overrides default)
+
   }
-
-  # TODO(someday): Support distributing objects across a cluster. At present, objects are always
-  #   local to one instance of the runtime.
-
-  moduleFallback @13 :Text;
-
-  tails @14 :List(ServiceDesignator);
-  # List of tail worker services that should receive tail events for this worker.
-  # See: https://developers.cloudflare.com/workers/observability/logs/tail-workers/
-
-  streamingTails @15 :List(ServiceDesignator);
-  # List of streaming tail worker services that should receive tail events for this worker.
-  # NOTE: This will be deleted in a future refactor, do not depend on this.
 }
 
 struct ExternalServer {
